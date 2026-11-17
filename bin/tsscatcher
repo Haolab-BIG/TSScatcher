@@ -30,6 +30,7 @@ run_project() {
   local threads=10 memory=64 deep_learning=yes dl_threshold=$DL_THRESHOLD rescue_distance=$RESCUE_DISTANCE
   local merge_distance=$MERGE_DISTANCE min_replicates=$MIN_REPLICATES shift_max_distance=$SHIFT_MAX_DISTANCE
   local extend_bp=$EXTEND_BP peak_count=$PEAK_COUNT peak_summit=$PEAK_SUMMIT confirm_mismatch=no cellranger_bin=cellranger
+  local tsolike_bed="$root_dir/ref/TSOlike/TSO_mismatch_2_sort.bed"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --samples) samples=$2; shift 2;; --id) id=$2; shift 2;; --fastqs) fastqs=$2; shift 2;;
@@ -40,6 +41,7 @@ run_project() {
       --min-replicates) min_replicates=$2; shift 2;; --shift-max-distance) shift_max_distance=$2; shift 2;;
       --extend-bp) extend_bp=$2; shift 2;; --peak-count) peak_count=$2; shift 2;; --peak-summit) peak_summit=$2; shift 2;;
       --confirm-type-mismatch) confirm_mismatch=yes; shift;; --cellranger) cellranger_bin=$2; shift 2;;
+      --tsolike-bed) tsolike_bed=$2; shift 2;;
       --help) usage; return 0;; *) die "unknown run option: $1";;
     esac
   done
@@ -47,14 +49,27 @@ run_project() {
   reference=$(realpath -m "$reference")
   output=$(realpath -m "$output")
   [[ "$deep_learning" == yes || "$deep_learning" == no ]] || die "--deep-learning must be yes or no"
-  for f in "$reference/genome/genome.fa" "$reference/genome/chrom.sizes" "$reference/genome/reference_tss.bed" "$reference/genome/genes.extend${extend_bp}.gtf"; do require_file "$f"; done
+  tsolike_bed=$(realpath -m "$tsolike_bed")
+  require_file "$tsolike_bed"
+  for f in "$reference/genome/genome.fa" "$reference/genome/chrom.sizes" "$reference/genome/reference_tss.bed"; do require_file "$f"; done
   [[ -d "$reference/cellranger" ]] || die "Cell Ranger reference parent not found: $reference/cellranger"
   cellranger_ref=$(find "$reference/cellranger" -mindepth 1 -maxdepth 1 -type d -print -quit)
   [[ -n "$cellranger_ref" ]] || die "no Cell Ranger reference found under $reference/cellranger"
-  [[ -e "$reference/rsem/reference.grp" || -e "$reference/rsem/reference.idx.fa" ]] || die "RSEM reference prefix not found: $reference/rsem/reference"
-  make_dir "$output/results/samples"; make_dir "$output/results/cellranger"; make_dir "$output/results/aggregate"; make_dir "$output/work"
+  local run_info="$output/1_run_information"
+  local cellranger_dir="$output/2_cellranger"
+  local preprocessed_dir="$output/3_preprocessed_bam"
+  local sample_tss_dir="$output/4_sample_tss"
+  local merged_tss_dir="$output/5_merged_tss"
+  local quantification_dir="$output/6_quantification"
+  local tmp_root="$output/tmp"
+  make_dir "$tmp_root"
+  local tmp_dir
+  tmp_dir=$(mktemp -d "$tmp_root/TSScatcher.XXXXXX")
+  make_dir "$run_info"; make_dir "$cellranger_dir"; make_dir "$preprocessed_dir"
+  make_dir "$sample_tss_dir"; make_dir "$merged_tss_dir"
+  make_dir "$quantification_dir/per_sample"; make_dir "$quantification_dir/all_samples"
 
-  local runtime="$output/work/samples.tsv"
+  local runtime="$run_info/samples.tsv"
   if [[ -n "$samples" ]]; then
     require_file "$samples"
     awk 'BEGIN{FS=OFS="\t"} {sub(/\r$/, "", $NF)} NR==1{if($1!="sample_id"||$2!="fastq_dir"||$3!="fastq_sample"||$4!="type")exit 2; print;next} NF{if($4!="long"&&$4!="short")exit 3;print}' "$samples" > "$runtime" || die "sample sheet must begin: sample_id, fastq_dir, fastq_sample, type"
@@ -63,39 +78,45 @@ run_project() {
     printf 'sample_id\tfastq_dir\tfastq_sample\ttype\n%s\t%s\t%s\t%s\n' "$id" "$fastqs" "$fastq_sample" "$type" > "$runtime"
   fi
   [[ $(tail -n +2 "$runtime" | cut -f1 | sort | uniq -d | wc -l) -eq 0 ]] || die "sample_id values must be unique"
+  if awk -F '\t' 'NR>1 && $4=="short" {found=1} END{exit !found}' "$runtime"; then
+    require_file "$reference/genome/genes.extend${extend_bp}.gtf"
+    [[ -e "$reference/rsem/reference.grp" || -e "$reference/rsem/reference.idx.fa" ]] || die "short samples require the RSEM reference prefix: $reference/rsem/reference"
+  fi
 
-  local merge_manifest="$output/work/merge_manifest.tsv"
+  local merge_manifest="$run_info/merge_manifest.tsv"
   printf 'sample_id\tpeak_file\n' > "$merge_manifest"
   while IFS=$'\t' read -r sid fqdir fqsample stype; do
     [[ "$sid" == sample_id ]] && continue
-    map_args=(--id "$sid" --fastqs "$fqdir" --sample "$fqsample" --type "$stype" --transcriptome "$cellranger_ref" --output "$output/results/cellranger" --threads "$threads" --memory "$memory" --cellranger "$cellranger_bin" --type-check-reads "$TYPE_CHECK_READS" --short-r1-max-length "$SHORT_R1_MAX_LENGTH")
+    map_args=(--id "$sid" --fastqs "$fqdir" --sample "$fqsample" --type "$stype" --transcriptome "$cellranger_ref" --output "$cellranger_dir" --threads "$threads" --memory "$memory" --cellranger "$cellranger_bin" --type-check-reads "$TYPE_CHECK_READS" --short-r1-max-length "$SHORT_R1_MAX_LENGTH")
     [[ "$confirm_mismatch" == yes ]] && map_args+=(--confirm-type-mismatch)
     "$libexec/map_cellranger.sh" "${map_args[@]}"
-    cr_out="$output/results/cellranger/$sid/outs"
-    sample_out="$output/results/samples/$sid"
-    "$libexec/preprocess.sh" --bam "$cr_out/possorted_genome_bam.bam" --id "$sid" --barcodes "$cr_out/filtered_feature_bc_matrix/barcodes.tsv.gz" --type "$stype" --output "$sample_out/preprocess" --threads "$threads"
-    filtered_bam="$sample_out/preprocess/${sid}.filtered.bam"
-    common=(--bam "$filtered_bam" --id "$sid" --output "$sample_out" --chrom-sizes "$reference/genome/chrom.sizes" --tsolike "$root_dir/ref/TSOlike/TSO_mismatch_2_sort.bed" --fasta "$reference/genome/genome.fa" --reference-tss "$reference/genome/reference_tss.bed" --threads "$threads" --peak-count "$peak_count" --peak-summit "$peak_summit" --deep-learning "$deep_learning" --dl-threshold "$dl_threshold" --rescue-distance "$rescue_distance")
+    cr_out="$cellranger_dir/$sid/outs"
+    sample_out="$sample_tss_dir/$sid"
+    "$libexec/preprocess.sh" --bam "$cr_out/possorted_genome_bam.bam" --id "$sid" --barcodes "$cr_out/filtered_feature_bc_matrix/barcodes.tsv.gz" --type "$stype" --output "$preprocessed_dir/$sid" --tmp-dir "$tmp_dir/$sid/preprocess" --threads "$threads"
+    filtered_bam="$preprocessed_dir/$sid/${sid}.filtered_reads.bam"
+    common=(--bam "$filtered_bam" --id "$sid" --output "$sample_out" --tmp-dir "$tmp_dir/$sid/call_peaks" --chrom-sizes "$reference/genome/chrom.sizes" --tsolike "$tsolike_bed" --fasta "$reference/genome/genome.fa" --reference-tss "$reference/genome/reference_tss.bed" --threads "$threads" --peak-count "$peak_count" --peak-summit "$peak_summit" --deep-learning "$deep_learning" --dl-threshold "$dl_threshold" --rescue-distance "$rescue_distance")
     if [[ "$stype" == long ]]; then
       "$libexec/call_long.sh" "${common[@]}"
     else
       "$libexec/call_short.sh" "${common[@]}" --rsem-ref "$reference/rsem/reference" --extended-gtf "$reference/genome/genes.extend${extend_bp}.gtf" --extend-bp "$extend_bp" --shift-max-distance "$shift_max_distance"
     fi
-    if [[ "$deep_learning" == yes ]]; then peak_file="$sample_out/peaks/${sid}.dl_filtered_peaks.bed"; else peak_file="$sample_out/peaks/${sid}.pre_dl_peaks.bed"; fi
+    if [[ "$deep_learning" == yes ]]; then peak_file="$sample_out/4_final_sample_tss/${sid}.final_sample_tss.bed"; else peak_file="$sample_out/3_peak_calling/${sid}.tso_filtered_peaks.before_dl.bed"; fi
     require_file "$peak_file"; printf '%s\t%s\n' "$sid" "$peak_file" >> "$merge_manifest"
   done < "$runtime"
 
-  python3 "$libexec/merge_sites.py" --manifest "$merge_manifest" --output-bed "$output/results/aggregate/final_sites.bed.gz" --output-support "$output/results/aggregate/final_sites.support.tsv.gz" --min-replicates "$min_replicates" --merge-distance "$merge_distance"
-  local aggregate_counts="$output/work/aggregate_counts.tsv"; : > "$aggregate_counts"
+  python3 "$libexec/merge_sites.py" --manifest "$merge_manifest" --output-bed "$merged_tss_dir/final_merged_tss.bed.gz" --output-support "$merged_tss_dir/final_merged_tss.supporting_samples.tsv.gz" --min-replicates "$min_replicates" --merge-distance "$merge_distance"
+  local aggregate_counts="$tmp_dir/aggregate_counts.tsv"; : > "$aggregate_counts"
   while IFS=$'\t' read -r sid fqdir fqsample stype; do
     [[ "$sid" == sample_id ]] && continue
-    sample_out="$output/results/samples/$sid"; counts="$output/work/${sid}.counts.tsv"
-    "$libexec/quantify.sh" --id "$sid" --reads "$sample_out/reads/${sid}.reads.bed.gz" --final-sites "$output/results/aggregate/final_sites.bed.gz" --output "$sample_out/matrix" --counts-output "$counts"
+    sample_out="$sample_tss_dir/$sid"; counts="$tmp_dir/${sid}.counts.tsv"
+    "$libexec/quantify.sh" --id "$sid" --reads "$sample_out/1_read_sites/${sid}.read_sites.bed.gz" --final-sites "$merged_tss_dir/final_merged_tss.bed.gz" --output "$quantification_dir/per_sample/$sid" --tmp-dir "$tmp_dir/$sid/quantify" --counts-output "$counts"
     awk -v s="$sid" 'BEGIN{FS=OFS="\t"}{print $1,s"#"$2,$3}' "$counts" >> "$aggregate_counts"
   done < "$runtime"
   sort -k1,1 -k2,2 "$aggregate_counts" -o "$aggregate_counts"
-  python3 "$libexec/matrix_from_counts.py" --final-sites "$output/results/aggregate/final_sites.bed.gz" --counts "$aggregate_counts" --output "$output/results/aggregate/matrix"
-  note "TSScatcher run completed: $output/results"
+  python3 "$libexec/matrix_from_counts.py" --final-sites "$merged_tss_dir/final_merged_tss.bed.gz" --counts "$aggregate_counts" --output "$quantification_dir/all_samples"
+  rm -rf -- "$tmp_dir"
+  rmdir "$tmp_root" 2>/dev/null || true
+  note "TSScatcher run completed: $output"
 }
 
 [[ $# -gt 0 ]] || { usage; exit 0; }

@@ -3,7 +3,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${script_dir}/common.sh"
 
-sample_id= input= fasta= chrom_sizes= reference_tss= output_dir= threshold=0.5 rescue_distance=100
+sample_id= input= fasta= chrom_sizes= reference_tss= output_bed= qc_output= tmp_dir= threshold=0.5 rescue_distance=100
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --id) sample_id=$2; shift 2;;
@@ -11,17 +11,22 @@ while [[ $# -gt 0 ]]; do
     --fasta) fasta=$2; shift 2;;
     --chrom-sizes) chrom_sizes=$2; shift 2;;
     --reference-tss) reference_tss=$2; shift 2;;
-    --output-dir) output_dir=$2; shift 2;;
+    --output-bed) output_bed=$2; shift 2;;
+    --qc-output) qc_output=$2; shift 2;;
+    --tmp-dir) tmp_dir=$2; shift 2;;
     --dl-threshold) threshold=$2; shift 2;;
     --rescue-distance) rescue_distance=$2; shift 2;;
     *) die "unknown DL/rescue option: $1";;
   esac
 done
-[[ -n "$sample_id" && -n "$input" && -n "$fasta" && -n "$chrom_sizes" && -n "$reference_tss" && -n "$output_dir" ]] || die "DL/rescue arguments are incomplete"
+[[ -n "$sample_id" && -n "$input" && -n "$fasta" && -n "$chrom_sizes" && -n "$reference_tss" && -n "$output_bed" && -n "$qc_output" ]] || die "DL/rescue arguments are incomplete"
 for cmd in bedtools awk sort paste python3; do require_cmd "$cmd"; done
 for file in "$input" "$fasta" "$chrom_sizes" "$reference_tss"; do require_file "$file"; done
-make_dir "$output_dir"
-work=$(mktemp -d "$output_dir/.dl_rescue.XXXXXX")
+make_dir "$(dirname "$output_bed")"
+make_dir "$(dirname "$qc_output")"
+[[ -n "$tmp_dir" ]] || tmp_dir="$(dirname "$qc_output")/tmp"
+make_dir "$tmp_dir"
+work=$(mktemp -d "$tmp_dir/dl_rescue.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 
 awk 'BEGIN{FS=OFS="\t"} NR==FNR{size[$1]=$2;next} {len=$3-$2; left=int((600-len)/2); s=$2-left; e=$3+left; if(s<0)s=0; if(e-s<600)e=s+600; if(e>size[$1]){e=size[$1];s=e-600;if(s<0)s=0} print $1,s,e,$4,$5,$6}' "$chrom_sizes" "$input" > "$work/windows.bed"
@@ -40,9 +45,9 @@ if [[ -s "$work/rejected.bed" ]]; then
 else
   : > "$work/rescued.bed"
 fi
-cat "$work/kept.bed" "$work/rescued.bed" | sort -k1,1 -k2,2n -k3,3n > "$output_dir/${sample_id}.dl_filtered_peaks.bed"
+cat "$work/kept.bed" "$work/rescued.bed" | sort -k1,1 -k2,2n -k3,3n > "$output_bed"
 awk 'BEGIN{FS=OFS="\t"}{print $4,1} END{print "__TSScatcher_sentinel__",0}' "$work/rescued.bed" > "$work/rescue_ids.tsv"
 awk -v p="$threshold" 'BEGIN{FS=OFS="\t"} NR==FNR{if($2==1)rescued[$1]=1;next}{status=($7>p?"dl_kept":(($4 in rescued)?"rescued":"dl_rejected"));print $4,$7,status}' "$work/rescue_ids.tsv" "$work/scored.tsv" > "$work/meta.body.tsv"
 { printf 'peak_id\tprobability\tstatus\n'; cat "$work/meta.body.tsv"; } > "$work/meta.tsv"
-gzip -c "$work/meta.tsv" > "$output_dir/${sample_id}.peak_metadata.tsv.gz"
-require_file "$output_dir/${sample_id}.dl_filtered_peaks.bed"
+gzip -c "$work/meta.tsv" > "$qc_output"
+require_file "$output_bed"

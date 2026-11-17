@@ -3,7 +3,7 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${script_dir}/common.sh"
 
-input_bam= sample_id= barcodes= type= output= threads=5
+input_bam= sample_id= barcodes= type= output= tmp_dir= threads=5
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --bam) input_bam=$2; shift 2;;
@@ -11,6 +11,7 @@ while [[ $# -gt 0 ]]; do
     --barcodes) barcodes=$2; shift 2;;
     --type) type=$2; shift 2;;
     --output) output=$2; shift 2;;
+    --tmp-dir) tmp_dir=$2; shift 2;;
     --threads) threads=$2; shift 2;;
     *) die "unknown preprocess option: $1";;
   esac
@@ -20,7 +21,9 @@ done
 for cmd in samtools awk grep python3; do require_cmd "$cmd"; done
 require_file "$input_bam"; require_file "$barcodes"
 make_dir "$output"
-work=$(mktemp -d "$output/.preprocess.XXXXXX")
+[[ -n "$tmp_dir" ]] || tmp_dir="$output/tmp"
+make_dir "$tmp_dir"
+work=$(mktemp -d "$tmp_dir/preprocess.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 
 samtools view -H "$input_bam" > "$work/header.sam"
@@ -35,7 +38,7 @@ BEGIN {while ((getline line < barcode_file)>0) keep[line]=1}
 cat "$work/header.sam" "$work/filtered.sam" | samtools view -@ "$threads" -b -o "$work/filtered_cb.bam" -
 [[ $(samtools view -c "$work/filtered_cb.bam") -gt 0 ]] || die "no reads matched the selected cell barcodes for $sample_id"
 
-final="$output/${sample_id}.filtered.bam"
+final="$output/${sample_id}.filtered_reads.bam"
 if [[ "$type" == long ]]; then
   samtools index -@ "$threads" "$work/filtered_cb.bam"
   python3 "$script_dir/FilterR1TSO.py" "$work/filtered_cb.bam" "$final"

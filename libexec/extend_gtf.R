@@ -32,7 +32,7 @@ for (i in seq_len(nrow(genenames))) {
       idx <- which(start(geneinfo) == site)
       old_start <- start(geneinfo)[idx]
       delta <- pmin(extend_bp, old_start - 1L)
-      width(geneinfo)[idx] <- width(geneinfo)[idx] + delta
+      # Setting start directly keeps the original end and extends width once.
       start(geneinfo)[idx] <- old_start - delta
     }
   } else if (as.character(strand(geneinfo)[1]) == "-") {

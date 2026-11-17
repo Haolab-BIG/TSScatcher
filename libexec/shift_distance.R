@@ -14,7 +14,7 @@ output_dir <- args[4]
 values <- scan(distance_file, what = numeric(), quiet = TRUE)
 values <- values[is.finite(values) & values >= 0 & values < max_distance]
 if (length(values) == 0) stop("no valid shift distances remain after filtering")
-shift_value <- as.integer(round(median(values)))
+shift_value <- median(values)
 density_obj <- density(values)
 plot_data <- data.frame(distance = values)
 p <- ggplot(plot_data, aes(x = distance)) +

@@ -1,50 +1,55 @@
 # Output layout
 
-Each sample is processed as exactly one library type (`long` or `short`). Long
-libraries use Cell Ranger chemistry `SC5P-PE`; short libraries use `SC5P-R2`.
+All project-generated files are placed below the directory supplied with `--output`. Each sample is processed as one library type (`long` or `short`).
 
 ```text
-results/
-  samples/<sample_id>/
-    peaks/
-      <sample_id>.paraclu_summit.raw.bed
-      <sample_id>.pre_dl_peaks.bed
-      <sample_id>.dl_filtered_peaks.bed       # DL-kept plus reference-rescued
-      <sample_id>.peak_metadata.tsv.gz
-    coverage/
-      <sample_id>.long_R1.plus.bw
-      <sample_id>.long_R1.minus.bw
-      # short libraries instead produce before/after-shift plus/minus bigWigs
-    shift/                                    # short libraries only
-      <sample_id>.shift_distance.pdf
-      <sample_id>.shift_distance.txt
-      <sample_id>.before_shift.reads.bed.gz
-      <sample_id>.after_shift.reads.bed.gz
-    matrix/
-      matrix.mtx.gz
-      barcodes.tsv.gz
-      features.tsv.gz
-  aggregate/
-    final_sites.bed.gz
-    final_sites.support.tsv.gz
-    matrix/
-      matrix.mtx.gz
-      barcodes.tsv.gz
-      features.tsv.gz
+<output>/
+├── 1_run_information/
+│   ├── samples.tsv
+│   └── merge_manifest.tsv
+├── 2_cellranger/
+│   └── <sample_id>/outs/
+├── 3_preprocessed_bam/
+│   └── <sample_id>/
+│       ├── <sample_id>.filtered_reads.bam
+│       └── <sample_id>.filtered_reads.bam.bai
+├── 4_sample_tss/
+│   └── <sample_id>/
+│       ├── 1_read_sites/
+│       │   ├── <sample_id>.read_sites.bed.gz
+│       │   ├── <sample_id>.read_sites.before_shift.bed.gz  # short only
+│       │   ├── <sample_id>.read_sites.after_shift.bed.gz   # short only
+│       │   ├── <sample_id>.shift_distance.txt              # short only
+│       │   └── <sample_id>.shift_distance.pdf              # short only
+│       ├── 2_coverage_tracks/
+│       │   ├── <sample_id>.read_coverage.plus.bw            # long
+│       │   ├── <sample_id>.read_coverage.minus.bw           # long
+│       │   └── <sample_id>.read_coverage.{before_shift,after_shift}.{plus,minus}.bw  # short
+│       ├── 3_peak_calling/
+│       │   ├── <sample_id>.paraclu_raw_summits.bed
+│       │   └── <sample_id>.tso_filtered_peaks.before_dl.bed
+│       └── 4_final_sample_tss/
+│           ├── <sample_id>.final_sample_tss.bed
+│           └── qc/<sample_id>.dl_filter_status.tsv.gz
+├── 5_merged_tss/
+│   ├── final_merged_tss.bed.gz
+│   └── final_merged_tss.supporting_samples.tsv.gz
+├── 6_quantification/
+│   ├── per_sample/<sample_id>/
+│   │   ├── matrix.mtx.gz
+│   │   ├── barcodes.tsv.gz
+│   │   └── features.tsv.gz
+│   └── all_samples/
+│       ├── matrix.mtx.gz
+│       ├── barcodes.tsv.gz
+│       └── features.tsv.gz
+└── tmp/TSScatcher.XXXXXX/   # removed after success; retained after failure
 ```
 
-The minus-strand bigWigs contain negative coverage for mirrored genome-browser
-display. Read names and cell barcodes are retained in read-level BED files, not
-in bedGraph files; standard bedGraph column 4 remains numeric coverage.
+`final_sample_tss.bed` is the final BED6 for one sample after DL filtering and reference rescue. `final_merged_tss.bed.gz` is the cross-sample BED6 used for quantification. Its score column is the number of supporting samples. `final_merged_tss.supporting_samples.tsv.gz` records their exact sample IDs.
 
-Coverage bedGraph files are temporary. After `bedGraphToBigWig` succeeds and the
-resulting bigWig is verified to be non-empty, the bedGraph is deleted. It is
-retained only when conversion fails, so the failed conversion can be diagnosed.
-Read-level BED files used for quantification are not deleted with these temporary
-coverage files.
+The QC table contains `peak_id`, DL `probability`, and `status` (`dl_kept`, `rescued`, or `dl_rejected`). It is not used as the final TSS input.
 
-`pre_dl_peaks.bed` is BED6 after TSO-like filtering and before deep-learning
-filtering. When deep learning is enabled, `dl_filtered_peaks.bed` is BED6 and
-contains both model-kept and reference-rescued peaks. No separate DL-only BED is
-written. When deep learning is disabled, neither `dl_filtered_peaks.bed` nor a
-rescue output is written, and `pre_dl_peaks.bed` enters multi-sample merging.
+Minus-strand bigWigs contain negative coverage for mirrored browser display. Read names and cell barcodes are retained in the seven-column read-site BED files. Temporary bedGraph files are deleted only after a non-empty bigWig is created.
+
+When `--deep-learning no` is used, `tso_filtered_peaks.before_dl.bed` enters multi-sample merging directly, so no `final_sample_tss.bed` or DL status table is created.
