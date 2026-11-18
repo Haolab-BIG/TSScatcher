@@ -7,10 +7,6 @@ TSScatcher calls and quantifies strand-aware transcription start sites (TSSs) fr
 
 The `long` and `short` labels therefore describe the R1 read structure, not different biological classes of TSS.
 
-This README is arranged as a start-to-finish tutorial. Complete Steps 1-5 in
-order for the first run. The parameter tables and algorithm notes are reference
-material and are not required to start.
-
 ## Step 1: install TSScatcher and its dependencies
 
 Linux is required. Clone the repository, enter it, and create the supplied micromamba environment:
