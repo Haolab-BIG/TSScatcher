@@ -21,7 +21,7 @@ done
 [[ "$reference_type" == long || "$reference_type" == short ]] || die "mkref requires --type long or --type short"
 for cmd in samtools "$cellranger_bin"; do require_cmd "$cmd"; done
 if [[ "$reference_type" == short ]]; then
-  for cmd in Rscript rsem-prepare-reference; do require_cmd "$cmd"; done
+  require_cmd rsem-prepare-reference
 fi
 require_file "$fasta"; require_file "$gtf"
 fasta=$(realpath "$fasta"); gtf=$(realpath "$gtf"); output=$(realpath -m "$output")
@@ -34,7 +34,7 @@ cut -f1,2 "$output/genome/genome.fa.fai" > "$output/genome/chrom.sizes"
 awk 'BEGIN{FS=OFS="\t"} $3=="transcript" && ($7=="+" || $7=="-") {t=($7=="+"?$4:$5); s=t-1; if(s<0)s=0; k=$1 FS s FS t FS $7; if(!seen[k]++) print $1,s,t,$1":"s"-"t":"$7,".",$7}' "$output/genome/genes.gtf" | sort -k1,1 -k2,2n > "$output/genome/reference_tss.bed"
 require_file "$output/genome/reference_tss.bed"
 if [[ "$reference_type" == short ]]; then
-  Rscript "$script_dir/extend_gtf.R" "$output/genome/genes.gtf" "$output/genome/genes.extend${extend_bp}.gtf" "$extend_bp"
+  "$script_dir/extend_gtf.sh" "$output/genome/genes.gtf" "$output/genome/genes.extend${extend_bp}.gtf" "$extend_bp"
   require_file "$output/genome/genes.extend${extend_bp}.gtf"
   rsem-prepare-reference -p "$threads" --gtf "$output/genome/genes.gtf" --star "$output/genome/genome.fa" "$output/rsem/reference"
 fi

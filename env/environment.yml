@@ -6,7 +6,6 @@ dependencies:
   - python=3.9
   - r-base
   - r-ggplot2
-  - bioconductor-rtracklayer
   - samtools
   - bedtools
   - bedops
